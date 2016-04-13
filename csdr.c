@@ -50,6 +50,17 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <math.h>
 #include <errno.h>
 
+#ifdef __APPLE__
+#include <mach/mach_time.h>  
+#endif
+
+#ifndef F_LINUX_SPECIFIC_BASE
+#define F_LINUX_SPECIFIC_BASE       1024
+#endif
+#ifndef F_SETPIPE_SZ
+#define F_SETPIPE_SZ	(F_LINUX_SPECIFIC_BASE + 7)
+#endif
+
 char usage[]=
 "csdr - a simple commandline tool for Software Defined Radio receiver DSP.\n\n"
 "usage: \n\n"
@@ -311,6 +322,22 @@ int parse_env()
 		env_csdr_print_bufsizes = atoi(envtmp);
 	}
 }
+
+/*
+   See http://web.archive.org/web/20100517095152/http://www.wand.net.nz/~smr26/wordpress/2009/01/19/monotonic-time-in-mac-os-x/comment-page-1/
+*/
+float mach_absolute_difference(uint64_t end, uint64_t start, struct timespec *tp) {  
+        uint64_t difference = end - start;  
+        static mach_timebase_info_data_t info = {0,0};  
+  
+        if (info.denom == 0)  
+                mach_timebase_info(&info);  
+  
+        uint64_t elapsednano = difference * (info.numer / info.denom);  
+  
+        tp->tv_sec = elapsednano * 1e-9;  
+        tp->tv_nsec = elapsednano - (tp->tv_sec * 1e9);  
+}  
 
 int main(int argc, char *argv[])
 {
@@ -1381,17 +1408,39 @@ int main(int argc, char *argv[])
 		//initialize FFT library, and measure time
 		fprintf(stderr,"fft_benchmark: initializing... ");
 		struct timespec start_time, end_time;
+		#ifdef __APPLE__
+		uint64_t start_time_mach, end_time_mach;
+		struct timespec tp;
+		start_time_mach = mach_absolute_time();
+		#else
 		clock_gettime(CLOCK_MONOTONIC_RAW, &start_time);
+		#endif
 		FFT_PLAN_T* plan=make_fft_c2c(fft_size,input,output,1,benchmark);
+		#ifdef __APPLE__
+		end_time_mach = mach_absolute_time();
+		mach_absolute_difference(end_time_mach, start_time_mach, &tp);  
+        fprintf(stderr, "done in %lu seconds\n", tp.tv_sec);
+		#else
 		clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
 		fprintf(stderr,"done in %g seconds.\n",TIME_TAKEN(start_time,end_time));
+		#endif
 
 		//do the actual measurement about the FFT
+		#ifdef __APPLE__
+		start_time_mach = mach_absolute_time();
+		#else
 		clock_gettime(CLOCK_MONOTONIC_RAW, &start_time);
+		#endif
 		for(int i=0;i<fft_cycles;i++) fft_execute(plan);
+		#ifdef __APPLE__
+		end_time_mach = mach_absolute_time();
+		mach_absolute_difference(end_time_mach, start_time_mach, &tp);  
+		fprintf(stderr,"fft_benchmark: %d transforms of %d processed in %g seconds, %g seconds each.\n",fft_cycles,fft_size,tp.tv_sec,tp.tv_sec/fft_cycles);
+		#else
 		clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
 		float time_taken_fft = TIME_TAKEN(start_time,end_time);
 		fprintf(stderr,"fft_benchmark: %d transforms of %d processed in %g seconds, %g seconds each.\n",fft_cycles,fft_size,time_taken_fft,time_taken_fft/fft_cycles);
+		#endif
 		return 0;
 	}
 
@@ -1653,17 +1702,38 @@ int main(int argc, char *argv[])
 			if(!time_now_sec)
 			{
 				time_now_sec=1;
+				#ifdef __APPLE__
+				uint64_t start_time_mach, end_time_mach;
+				struct timespec tp;
+				start_time_mach = mach_absolute_time();
+				#else
 				clock_gettime(CLOCK_MONOTONIC_RAW, &start_time);
+				#endif
 			}
 			else
 			{
+				#ifdef __APPLE__
+				uint64_t start_time_mach, end_time_mach;
+				struct timespec tp;
+				end_time_mach = mach_absolute_time();
+				mach_absolute_difference(end_time_mach, start_time_mach, &tp);  
+				fprintf(stderr, "done in %lu seconds\n", tp.tv_sec);
+				float timetaken;
+				if(time_now_sec<(timetaken=mach_absolute_difference(end_time_mach, start_time_mach, &tp)))
+				{
+					fprintf( stderr, "through: %lu bytes/s %d\n", (unsigned long)floor((float)buffer_count*the_bufsize*sizeof(float)/timetaken), buffer_count );
+					time_now_sec=ceil(timetaken);
+				}
+				#else
 				clock_gettime(CLOCK_MONOTONIC_RAW, &end_time);
+				fprintf(stderr,"done in %g seconds.\n",TIME_TAKEN(start_time,end_time));
 				float timetaken;
 				if(time_now_sec<(timetaken=TIME_TAKEN(start_time,end_time)))
 				{
 					fprintf( stderr, "through: %lu bytes/s %d\n", (unsigned long)floor((float)buffer_count*the_bufsize*sizeof(float)/timetaken), buffer_count );
 					time_now_sec=ceil(timetaken);
 				}
+				#endif
 			}
 			fwrite(through_buffer, sizeof(float), the_bufsize, stdout);
 			buffer_count++;
